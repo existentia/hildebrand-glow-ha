@@ -54,6 +54,20 @@ shorter series for the same data.
 The first backfill runs in the background and can take a minute or two per
 stream. History depth is configurable under the integration's options.
 
+## Development
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements_test.txt
+.venv/bin/pytest -q
+```
+
+The suite covers the HTTP client (including the 200-with-`valid:false` auth
+rejection and the 401 retry), the config and reauth flows, dual-fuel discovery,
+statistic-ID disambiguation across multiple installations, and the statistics
+backfill — including that raising the history depth rebuilds the series rather
+than silently doing nothing.
+
 ## Notes and limitations
 
 - DCC data lags roughly 30 minutes. Polling is every 30 minutes; anything faster
