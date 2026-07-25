@@ -22,6 +22,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util, slugify
 
@@ -41,6 +42,11 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+STORAGE_VERSION = 1
+
+# Be polite between chunked history requests; a deep backfill is dozens of calls.
+CHUNK_DELAY_SECONDS = 0.2
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -75,6 +81,15 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
         self.client = client
         self.resources: list[GlowmarktResource] = []
         self._backfill_lock = asyncio.Lock()
+
+        # Remembers how many days of history have actually been imported for
+        # each statistic. Without this, raising the backfill option after the
+        # first run would do nothing, because the incremental path only ever
+        # walks forward from the newest statistic it already holds.
+        self._store: Store[dict[str, int]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.backfill"
+        )
+        self._depth_applied: dict[str, int] | None = None
 
     @property
     def _backfill_days(self) -> int:
@@ -208,57 +223,61 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
             return
 
         async with self._backfill_lock:
+            if self._depth_applied is None:
+                self._depth_applied = await self._store.async_load() or {}
+
             for resource in self.resources:
                 await self._async_backfill_resource(resource)
 
-    async def _async_backfill_resource(self, resource: GlowmarktResource) -> None:
-        """Import any hourly statistics we do not already hold."""
-        statistic_id = resource.statistic_id
+            await self._store.async_save(self._depth_applied)
 
-        last_stats = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
-        )
+    async def _async_backfill_resource(self, resource: GlowmarktResource) -> None:
+        """Import any hourly statistics we do not already hold.
+
+        Normally this walks forward from the newest statistic already stored.
+        If the configured history depth has been increased since the last run,
+        the series is instead cleared and rebuilt from the deeper start — rows
+        cannot simply be prepended, because `sum` is cumulative and every later
+        row would need recomputing.
+        """
+        assert self._depth_applied is not None
+        statistic_id = resource.statistic_id
 
         now = dt_util.utcnow()
         # Never import the hour in progress: it is still accumulating.
         current_hour = now.replace(minute=0, second=0, microsecond=0)
 
-        if last_stats and last_stats.get(statistic_id):
-            row = last_stats[statistic_id][0]
-            running_sum = float(row.get("sum") or 0.0)
-            cursor = dt_util.utc_from_timestamp(row["start"]) + timedelta(hours=1)
-        else:
+        requested_days = self._backfill_days
+        applied_days = self._depth_applied.get(statistic_id, 0)
+        rebuild = requested_days > applied_days
+
+        if rebuild:
+            if applied_days:
+                _LOGGER.info(
+                    "History depth for %s increased from %d to %d days, "
+                    "rebuilding the series",
+                    statistic_id,
+                    applied_days,
+                    requested_days,
+                )
+                # Queued on the recorder's FIFO queue, so it is guaranteed to
+                # run before the imports below.
+                get_instance(self.hass).async_clear_statistics([statistic_id])
             running_sum = 0.0
-            cursor = current_hour - timedelta(days=self._backfill_days)
+            cursor = current_hour - timedelta(days=requested_days)
+        else:
+            last_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
+            )
+            if last_stats and last_stats.get(statistic_id):
+                row = last_stats[statistic_id][0]
+                running_sum = float(row.get("sum") or 0.0)
+                cursor = dt_util.utc_from_timestamp(row["start"]) + timedelta(hours=1)
+            else:
+                running_sum = 0.0
+                cursor = current_hour - timedelta(days=requested_days)
 
         if cursor >= current_hour:
-            return
-
-        statistics: list[StatisticData] = []
-        while cursor < current_hour:
-            chunk_end = min(cursor + timedelta(days=HOURLY_CHUNK_DAYS), current_hour)
-            readings = await self.client.async_get_readings(
-                resource.resource_id,
-                cursor.replace(tzinfo=None),
-                (chunk_end - timedelta(seconds=1)).replace(tzinfo=None),
-                PERIOD_HOURLY,
-                offset_minutes=0,
-            )
-
-            for timestamp, value in readings:
-                moment = dt_util.utc_from_timestamp(timestamp)
-                if moment < cursor or moment >= current_hour:
-                    continue
-                if resource.info.is_cost:
-                    value = value / PENCE_PER_POUND
-                running_sum += value
-                statistics.append(
-                    StatisticData(start=moment, state=value, sum=running_sum)
-                )
-
-            cursor = chunk_end
-
-        if not statistics:
             return
 
         metadata = StatisticMetaData(
@@ -274,7 +293,46 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
                 else UnitOfEnergy.KILO_WATT_HOUR
             ),
         )
-        async_add_external_statistics(self.hass, metadata, statistics)
-        _LOGGER.debug(
-            "Imported %d hourly statistics for %s", len(statistics), statistic_id
-        )
+
+        imported = 0
+        while cursor < current_hour:
+            chunk_end = min(cursor + timedelta(days=HOURLY_CHUNK_DAYS), current_hour)
+            readings = await self.client.async_get_readings(
+                resource.resource_id,
+                cursor.replace(tzinfo=None),
+                (chunk_end - timedelta(seconds=1)).replace(tzinfo=None),
+                PERIOD_HOURLY,
+                offset_minutes=0,
+            )
+
+            batch: list[StatisticData] = []
+            for timestamp, value in readings:
+                moment = dt_util.utc_from_timestamp(timestamp)
+                if moment < cursor or moment >= current_hour:
+                    continue
+                if resource.info.is_cost:
+                    value = value / PENCE_PER_POUND
+                running_sum += value
+                batch.append(
+                    StatisticData(start=moment, state=value, sum=running_sum)
+                )
+
+            # Import per chunk rather than accumulating the lot: a deep backfill
+            # is tens of thousands of rows, and this way a failure part-way
+            # leaves the depth marker unset so the next run simply starts over.
+            if batch:
+                async_add_external_statistics(self.hass, metadata, batch)
+                imported += len(batch)
+
+            cursor = chunk_end
+            if cursor < current_hour:
+                await asyncio.sleep(CHUNK_DELAY_SECONDS)
+
+        # Recorded even when nothing came back, so a window reaching further
+        # back than the meter's own history does not rebuild on every poll.
+        self._depth_applied[statistic_id] = max(applied_days, requested_days)
+
+        if imported:
+            _LOGGER.debug(
+                "Imported %d hourly statistics for %s", imported, statistic_id
+            )
