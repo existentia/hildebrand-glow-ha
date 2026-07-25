@@ -3,6 +3,7 @@
   "name": "Glowmarkt (Bright)",
   "codeowners": ["@existentia"],
   "config_flow": true,
+  "dependencies": ["recorder"],
   "documentation": "https://github.com/existentia/hildebrand-glow-ha",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/existentia/hildebrand-glow-ha/issues",
