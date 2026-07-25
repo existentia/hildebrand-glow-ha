@@ -4,9 +4,8 @@
   "codeowners": ["@existentia"],
   "config_flow": true,
   "documentation": "https://github.com/existentia/hildebrand-glow-ha",
-  "issue_tracker": "https://github.com/existentia/hildebrand-glow-ha/issues",
   "iot_class": "cloud_polling",
-  "integration_type": "hub",
+  "issue_tracker": "https://github.com/existentia/hildebrand-glow-ha/issues",
   "requirements": [],
   "version": "0.1.0"
 }
