@@ -1,7 +1,7 @@
 # Glowmarkt (Bright) — Home Assistant integration
 
 Reads UK smart meter data from the [Hildebrand Glowmarkt](https://glowmarkt.com)
-platform — the backend behind the **Bright** app — and feeds it to Home
+platform — the backend behind the [Bright app](https://glowmarkt.com/bright) — and feeds it to Home
 Assistant's Energy dashboard.
 
 No Glow hardware required. If your SMETS2 meter is verified in the Bright app,
