@@ -1,10 +1,10 @@
 {
   "domain": "glowmarkt",
   "name": "Glowmarkt (Bright)",
-  "codeowners": ["@REPLACE_WITH_GITHUB_HANDLE"],
+  "codeowners": ["@existentia"],
   "config_flow": true,
-  "documentation": "https://github.com/REPLACE_WITH_GITHUB_HANDLE/REPLACE_WITH_REPO",
-  "issue_tracker": "https://github.com/REPLACE_WITH_GITHUB_HANDLE/REPLACE_WITH_REPO/issues",
+  "documentation": "https://github.com/existentia/hildebrand-glow-ha",
+  "issue_tracker": "https://github.com/existentia/hildebrand-glow-ha/issues",
   "iot_class": "cloud_polling",
   "integration_type": "hub",
   "requirements": [],
