@@ -26,8 +26,9 @@ Glow hardware needed; a SMETS2 meter verified in Bright is enough.
 One device per installation, with a `<fuel> today` sensor for each stream. These
 carry no `state_class` by design — statistics come from the API import path, and
 a state_class would make the recorder generate a second, shorter series for the
-same data. Point the Energy dashboard at the `glowmarkt:` statistic IDs, not at
-the entities.
+same data. Anywhere that asks for a statistic rather than an entity — a
+statistics graph card, or the Energy dashboard if you use one — reference the
+`glowmarkt:` statistic IDs, not the entities.
 
 ### Requirements
 
