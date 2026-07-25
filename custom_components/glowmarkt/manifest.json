@@ -1,0 +1,12 @@
+{
+  "domain": "glowmarkt",
+  "name": "Glowmarkt (Bright)",
+  "codeowners": ["@REPLACE_WITH_GITHUB_HANDLE"],
+  "config_flow": true,
+  "documentation": "https://github.com/REPLACE_WITH_GITHUB_HANDLE/REPLACE_WITH_REPO",
+  "issue_tracker": "https://github.com/REPLACE_WITH_GITHUB_HANDLE/REPLACE_WITH_REPO/issues",
+  "iot_class": "cloud_polling",
+  "integration_type": "hub",
+  "requirements": [],
+  "version": "0.1.0"
+}

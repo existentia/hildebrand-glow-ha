@@ -1,0 +1,42 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Glowmarkt (Bright)",
+        "description": "Sign in with the account you use for the Bright app. Your smart meter must already be set up and verified in Bright.",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Glowmarkt",
+        "description": "The password for {username} is no longer working. Enter it again to reconnect.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the Glowmarkt API. Check your internet connection and try again.",
+      "invalid_auth": "Those credentials were rejected. Use the same email and password as the Bright app.",
+      "no_meters": "Signed in successfully, but no meters were found on this account. Complete meter setup in the Bright app first.",
+      "unknown": "Something unexpected went wrong. Check the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This Glowmarkt account is already set up.",
+      "reauth_successful": "Glowmarkt reconnected successfully."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Glowmarkt options",
+        "description": "How far back to reach the first time statistics are imported. Existing statistics are never re-fetched, so raising this later only pulls in the extra history.",
+        "data": {
+          "backfill_days": "Days of history to import"
+        }
+      }
+    }
+  }
+}
