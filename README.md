@@ -1,8 +1,8 @@
 # Glowmarkt (Bright) — Home Assistant integration
 
 Reads UK smart meter data from the [Hildebrand Glowmarkt](https://glowmarkt.com)
-platform — the backend behind the [Bright app](https://glowmarkt.com/bright) — and feeds it to Home
-Assistant's Energy dashboard.
+platform — the backend behind the [Bright app](https://glowmarkt.com/bright) — and
+makes it available in Home Assistant as sensors and long-term statistics.
 
 No Glow hardware required. If your SMETS2 meter is verified in the Bright app,
 Hildebrand can pull delayed half-hourly consumption from the DCC, and this reads
@@ -19,12 +19,15 @@ ground-up implementation with one significant behavioural difference:
 **It backfills history.** Glowmarkt serves historical readings, so on first
 setup this imports up to a year of hourly consumption as
 [external statistics](https://developers.home-assistant.io/docs/core/entity/sensor/#long-term-statistics)
-rather than starting from zero and accumulating forward. The Energy dashboard
-has your history immediately.
+rather than starting from zero and accumulating forward. Your history is there
+from the moment you set it up, not a year later.
 
 ## What it creates
 
-One device per installation, and for each data stream Glowmarkt exposes:
+Two things, which you can use independently.
+
+**Sensor entities** — one device per installation, with a "today so far" sensor
+for each stream Glowmarkt exposes:
 
 | Entity | Unit |
 | --- | --- |
@@ -33,9 +36,13 @@ One device per installation, and for each data stream Glowmarkt exposes:
 | `sensor.<installation>_gas_today` | kWh |
 | `sensor.<installation>_gas_cost_today` | GBP |
 
-Plus long-term statistics under `glowmarkt:electricity_consumption`,
-`glowmarkt:gas_consumption`, and so on. **Those statistic IDs are what you point
-the Energy dashboard at**, not the entities.
+These are ordinary entities. Put them on any dashboard, use them in automations
+and templates, or ignore them entirely.
+
+**Long-term statistics** — hourly history under IDs like
+`glowmarkt:electricity_consumption` and `glowmarkt:gas_consumption`. These are
+*statistics*, not entities: they hold the backfilled history and are what you
+reference anywhere that asks for a statistic rather than an entity.
 
 The entities intentionally carry no `state_class`. Statistics come from the API
 import path; adding a state_class would make the recorder generate a second,
@@ -43,16 +50,46 @@ shorter series for the same data.
 
 ## Setup
 
-1. Install via HACS as a custom repository, or copy `custom_components/glowmarkt`
-   into your `config/custom_components/`.
-2. Restart Home Assistant.
-3. **Settings → Devices & Services → Add Integration → Glowmarkt**, and sign in
-   with your Bright email and password.
-4. **Settings → Dashboards → Energy**, and add `glowmarkt:electricity_consumption`
-   as the grid consumption source (and the cost statistic alongside it).
+You will need a [Bright](https://glowmarkt.com/bright) account with your meter
+set up and verified — the same email and password you use in the app.
 
-The first backfill runs in the background and can take a minute or two per
-stream. History depth is configurable under the integration's options.
+1. **Install.** In HACS, open the three-dot menu → **Custom repositories**, add
+   `https://github.com/existentia/hildebrand-glow-ha` with category
+   **Integration**, then find *Glowmarkt (Bright)* and download it.
+   Alternatively, copy `custom_components/glowmarkt` into your
+   `config/custom_components/` by hand.
+2. **Restart Home Assistant.**
+3. **Settings → Devices & Services → Add Integration → Glowmarkt**, and sign in.
+
+That is everything the integration needs. The first backfill runs in the
+background and can take a minute or two per stream; history depth is
+configurable under the integration's options. See
+[Using the data](#using-the-data) for what to do with it.
+
+## Using the data
+
+There is no requirement to use Home Assistant's Energy dashboard — it is one
+option of several, and it is fine if you have never set it up.
+
+**On any dashboard you already have.** Add the `_today` sensors like any other
+entity, with a tile, entities or gauge card.
+
+**To chart the history**, use a **Statistics graph** card and pick a
+`glowmarkt:` statistic ID. This is where the backfilled data shows up, and it
+works whether or not the Energy dashboard is configured. The **Statistic** card
+is the equivalent for a single figure such as this month's total.
+
+**In the Energy dashboard**, if you use it. Go to **Settings → Dashboards →
+Energy**. If you have never configured it, this is where you set it up for the
+first time; the panel appears in the sidebar once at least one source is
+defined. Add `glowmarkt:electricity_consumption` as a grid consumption source,
+and `glowmarkt:electricity_consumption_cost` as its cost. Gas is configured the
+same way under its own section. Note that these are statistics — pick them from
+the statistic picker; the `_today` entities are not what you want here.
+
+**In automations and templates**, use the entities for current values, or the
+[statistics websocket API](https://developers.home-assistant.io/docs/api/websocket#fetching-statistics)
+for history.
 
 ## Development
 
