@@ -11,8 +11,8 @@ Glow hardware needed; a SMETS2 meter verified in Bright is enough.
 ### Highlights
 
 - **History is backfilled, not accumulated.** Long-term statistics are imported
-  from the API as external statistics, so the Energy dashboard has your past
-  consumption the moment you set it up rather than starting from zero. Depth is
+  from the API as external statistics, so your past consumption is available the
+  moment you set it up rather than starting from zero. Depth is
   configurable (default 365 days) and raising it later rebuilds the series rather
   than silently doing nothing.
 - **Electricity and gas**, consumption and cost, for every installation on the
