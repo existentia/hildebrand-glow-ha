@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.2 — 2026-07-27
+
+Fixes a large negative reading on the most recent hour.
+
+Upgrading from v0.1.0 could leave rows beyond the readings actually held, still
+carrying the cumulative total from whenever collection stalled. v0.1.1 correctly
+stops importing at the last real reading, but that also means it never overwrote
+those rows — so the running total stepped backwards, and the hour where it did
+so read as a large negative figure.
+
+Hours left past the available data are now rewritten with the carried-forward
+total, so they read as zero rather than negative, without inventing consumption.
+Real figures replace them once the readings arrive.
+
+Also rebuilds rather than extends when the whole stored series sits inside the
+refresh window, instead of anchoring the running total to a tail that may itself
+be stale.
+
 ## v0.1.1 — 2026-07-27
 
 Fixes a stall where consumption would stop updating after roughly a day, while

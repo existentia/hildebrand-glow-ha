@@ -29,6 +29,8 @@ async def _setup(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
+    await entry.runtime_data.async_wait_for_backfill()
+    await hass.async_block_till_done()
 
 
 async def test_setup_creates_sensors_for_both_fuels(

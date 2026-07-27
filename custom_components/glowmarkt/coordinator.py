@@ -305,6 +305,64 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
             return None
         return float(series[-1].get("sum") or 0.0)
 
+    async def _async_hours_with_statistics(
+        self, statistic_id: str, start: datetime, end: datetime
+    ) -> list[datetime]:
+        """Return the hours in [start, end) that already hold a statistic."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            end,
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        return [
+            dt_util.utc_from_timestamp(row["start"])
+            for row in rows.get(statistic_id) or []
+        ]
+
+    async def _async_flatten_stale_tail(
+        self,
+        statistic_id: str,
+        metadata: StatisticMetaData,
+        after: datetime,
+        until: datetime,
+        running_sum: float,
+    ) -> int:
+        """Neutralise rows left beyond the data we actually have.
+
+        Trimming an unreported tail stops us importing those hours, but any
+        rows an earlier version already wrote there stay put — carrying a much
+        older cumulative total. The series then drops backwards, which surfaces
+        as a large negative reading for that hour.
+
+        Rewriting them with the carried-forward sum makes those hours read as
+        zero rather than negative, without inventing consumption. Real figures
+        replace them once the readings arrive.
+        """
+        stale = await self._async_hours_with_statistics(statistic_id, after, until)
+        if not stale:
+            return 0
+
+        async_add_external_statistics(
+            self.hass,
+            metadata,
+            [
+                StatisticData(start=moment, state=0.0, sum=running_sum)
+                for moment in stale
+            ],
+        )
+        _LOGGER.debug(
+            "Flattened %d stale hour(s) after %s for %s",
+            len(stale),
+            after.isoformat(),
+            statistic_id,
+        )
+        return len(stale)
+
     async def _async_backfill_guarded(self) -> None:
         """Run the backfill, swallowing errors so the task never explodes."""
         try:
@@ -384,11 +442,13 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
                 )
                 anchor_sum = await self._async_sum_before(statistic_id, cursor)
                 if anchor_sum is None:
-                    # Nothing to anchor the running total against, so rewriting
-                    # the window would corrupt every later sum. Stay strictly
-                    # incremental instead.
-                    cursor = next_new_hour
-                    running_sum = float(row.get("sum") or 0.0)
+                    # The stored series lies entirely inside the refresh window,
+                    # so there is no earlier row to anchor the running total to.
+                    # Rebuild from the start of the configured history rather
+                    # than continuing from a tail that may itself be stale — it
+                    # is at most a window's worth of hours.
+                    cursor = current_hour - timedelta(days=requested_days)
+                    running_sum = 0.0
                 else:
                     running_sum = anchor_sum
             else:
@@ -413,6 +473,7 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
         )
 
         imported = 0
+        last_imported: datetime | None = None
         while cursor < current_hour:
             if self.hass.is_stopping:
                 _LOGGER.debug("Home Assistant is stopping, abandoning backfill")
@@ -450,10 +511,21 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
             if batch:
                 async_add_external_statistics(self.hass, metadata, batch)
                 imported += len(batch)
+                last_imported = batch[-1]["start"]
 
             cursor = chunk_end
             if cursor < current_hour:
                 await asyncio.sleep(CHUNK_DELAY_SECONDS)
+
+        # Anything still sitting past the readings we actually have would drag
+        # the cumulative total backwards, so flatten it.
+        tail_start = (
+            last_imported + timedelta(hours=1) if last_imported else cursor
+        )
+        if tail_start < current_hour:
+            await self._async_flatten_stale_tail(
+                statistic_id, metadata, tail_start, current_hour, running_sum
+            )
 
         # Recorded even when nothing came back, so a window reaching further
         # back than the meter's own history does not rebuild on every poll.

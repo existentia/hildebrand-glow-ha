@@ -25,13 +25,24 @@ from .const import HOURLY_ENERGY, FakeGlowmarktClient
 STAT_ID = f"{DOMAIN}:electricity_consumption"
 
 
+async def _settle(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Let the background backfill finish before asserting or tearing down.
+
+    It queries the recorder from an executor thread; leaving it in flight while
+    the test harness disposes of the database is a segfault, not a failure.
+    """
+    await entry.runtime_data.async_wait_for_backfill()
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+
 async def _setup(hass: HomeAssistant, entry: MockConfigEntry) -> FakeGlowmarktClient:
     client = FakeGlowmarktClient()
     entry.add_to_hass(hass)
     with patch("custom_components.glowmarkt.GlowmarktClient", return_value=client):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    await async_wait_recording_done(hass)
+    await _settle(hass, entry)
     return client
 
 
@@ -130,7 +141,7 @@ async def test_second_pass_does_not_duplicate(
     first = await _rows(hass)
 
     await entry.runtime_data.async_backfill()
-    await async_wait_recording_done(hass)
+    await _settle(hass, entry)
 
     assert len(await _rows(hass)) == len(first)
 
@@ -161,7 +172,7 @@ async def test_uncollected_zero_tail_is_not_imported(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    await async_wait_recording_done(hass)
+    await _settle(hass, entry)
 
     rows = await _rows(hass)
     assert rows
@@ -193,7 +204,7 @@ async def test_late_data_replaces_previously_zero_hours(
     with patch("custom_components.glowmarkt.GlowmarktClient", return_value=stalled):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    await async_wait_recording_done(hass)
+    await _settle(hass, entry)
 
     before = await _rows(hass)
     stalled_latest = dt_util.utc_from_timestamp(before[-1]["start"])
@@ -201,7 +212,7 @@ async def test_late_data_replaces_previously_zero_hours(
     # The DCC catches up and the missing hours now return real values.
     stalled.zero_from = None
     await entry.runtime_data.async_backfill()
-    await async_wait_recording_done(hass)
+    await _settle(hass, entry)
 
     after = await _rows(hass)
     assert dt_util.utc_from_timestamp(after[-1]["start"]) > stalled_latest
@@ -232,3 +243,72 @@ async def test_catchup_is_requested_and_rate_limited(
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert len(client.catchup_calls) == resource_count
+
+
+async def test_stale_rows_past_the_data_are_flattened(
+    glowmarkt_env, hass: HomeAssistant
+) -> None:
+    """Rows left beyond the readings we hold must not drag the total backwards.
+
+    An earlier version stored uncollected hours as zeroes carrying a much older
+    cumulative total. Trimming stops us overwriting them, so the series steps
+    down and that hour reads as a large negative figure.
+    """
+    from homeassistant.components.recorder.models import (
+        StatisticData,
+        StatisticMeanType,
+        StatisticMetaData,
+    )
+    from homeassistant.components.recorder.statistics import (
+        async_add_external_statistics,
+    )
+    from homeassistant.const import UnitOfEnergy
+
+    now_hour = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    zero_from = now_hour - timedelta(hours=6)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="a@b.com",
+        data={"username": "a@b.com", "password": "pw"},
+        options={CONF_BACKFILL_DAYS: 2},
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.glowmarkt.GlowmarktClient",
+        return_value=FakeGlowmarktClient(zero_from=zero_from),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    await _settle(hass, entry)
+
+    # Plant the damage an older version would have left behind: zero readings
+    # past the real data, carrying a stale cumulative total.
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name="stale",
+            source=DOMAIN,
+            statistic_id=STAT_ID,
+            unit_class=None,
+            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        ),
+        [
+            StatisticData(start=zero_from + timedelta(hours=i), state=0.0, sum=1.0)
+            for i in range(5)
+        ],
+    )
+    await async_wait_recording_done(hass)
+
+    def deltas(rows: list[dict]) -> list[float]:
+        return [b["sum"] - a["sum"] for a, b in zip(rows, rows[1:])]
+
+    assert min(deltas(await _rows(hass))) < 0, "test did not reproduce the fault"
+
+    await entry.runtime_data.async_backfill()
+    await _settle(hass, entry)
+
+    repaired = await _rows(hass)
+    assert min(deltas(repaired)) >= 0, "cumulative total still steps backwards"
