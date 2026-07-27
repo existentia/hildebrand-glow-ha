@@ -44,6 +44,12 @@ REFRESH_WINDOW_HOURS: Final = 72
 # import cursor forever.
 ZERO_TAIL_GRACE_HOURS: Final = 48
 
+# How long to let an in-flight backfill finish when the entry is going away.
+# It must be allowed to finish rather than be cancelled: its recorder queries
+# run in an executor thread, and abandoning them leaves that thread working
+# against a database the recorder is already disposing of.
+BACKFILL_SHUTDOWN_TIMEOUT: Final = 30
+
 PERIOD_HOURLY: Final = "PT1H"
 PERIOD_DAILY: Final = "P1D"
 FUNCTION_SUM: Final = "sum"

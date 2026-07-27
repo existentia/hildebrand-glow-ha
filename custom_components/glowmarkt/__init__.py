@@ -38,6 +38,10 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: GlowmarktConfigEntry
 ) -> bool:
     """Unload a config entry."""
+    # Wait for any running backfill first: its recorder queries run in an
+    # executor thread, and tearing down around them races the recorder closing
+    # its database connections.
+    await entry.runtime_data.async_wait_for_backfill()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

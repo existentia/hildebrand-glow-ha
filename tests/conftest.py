@@ -11,7 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
-from custom_components.glowmarkt.const import DOMAIN
+from custom_components.glowmarkt.const import CONF_BACKFILL_DAYS, DOMAIN
 
 from .const import PASSWORD, USERNAME, FakeGlowmarktClient
 
@@ -38,11 +38,15 @@ def glowmarkt_env(recorder_mock, enable_custom_integrations) -> None:
 @pytest.fixture
 def config_entry() -> MockConfigEntry:
     """A configured Glowmarkt account."""
+    # A shallow history window on purpose: the default 365 days would chunk
+    # the fake API into a year of requests, with the inter-chunk delay, for
+    # every test that merely wants entities to exist.
     return MockConfigEntry(
         domain=DOMAIN,
         title=USERNAME,
         unique_id=USERNAME,
         data={CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
+        options={CONF_BACKFILL_DAYS: 2},
     )
 
 

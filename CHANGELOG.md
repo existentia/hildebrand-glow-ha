@@ -31,6 +31,16 @@ Two changes prevent that:
   re-anchored to the statistic before it, so late and revised readings replace
   what was stored. Existing zeroed hours repair themselves on the next pass.
 
+### Do not query the recorder while it is shutting down
+
+The backfill runs as a background task and looks up existing statistics in the
+recorder's executor. Nothing stopped it doing so while the recorder was
+disposing of its database connections, which segfaults rather than raising.
+Unloading now waits for an in-flight backfill to finish rather than cancelling
+it — cancelling the awaiting task would not stop the executor thread — and no
+backfill is started, or continued between chunks, once Home Assistant is
+stopping.
+
 ## v0.1.0 — 2026-07-25
 
 First release.

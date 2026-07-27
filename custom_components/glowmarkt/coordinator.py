@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -29,6 +30,7 @@ from homeassistant.util import dt as dt_util, slugify
 
 from .api import GlowmarktAuthError, GlowmarktClient, GlowmarktConnectionError
 from .const import (
+    BACKFILL_SHUTDOWN_TIMEOUT,
     CATCHUP_INTERVAL,
     CONF_BACKFILL_DAYS,
     CURRENCY_GBP,
@@ -95,6 +97,7 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
         )
         self._depth_applied: dict[str, int] | None = None
         self._last_catchup: datetime | None = None
+        self._backfill_task: asyncio.Task[None] | None = None
 
     @property
     def _backfill_days(self) -> int:
@@ -210,11 +213,34 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
 
         # Statistics run separately so a slow first backfill never delays or
         # fails the entity update.
-        self.config_entry.async_create_background_task(
+        self._schedule_backfill()
+
+        return values
+
+    def _schedule_backfill(self) -> None:
+        """Start a backfill unless one is running or Home Assistant is stopping."""
+        if self.hass.is_stopping:
+            return
+        if self._backfill_task is not None and not self._backfill_task.done():
+            return
+        self._backfill_task = self.config_entry.async_create_background_task(
             self.hass, self._async_backfill_guarded(), "glowmarkt_backfill"
         )
 
-        return values
+    async def async_wait_for_backfill(self) -> None:
+        """Let an in-flight backfill finish before the entry is torn down.
+
+        Cancelling is not enough. The recorder lookups run in an executor
+        thread, and abandoning the awaiting task leaves that thread querying a
+        database the recorder may already be disposing of — which segfaults
+        rather than raising.
+        """
+        task = self._backfill_task
+        if task is None or task.done():
+            return
+        with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+            async with asyncio.timeout(BACKFILL_SHUTDOWN_TIMEOUT):
+                await task
 
     async def _async_catchup_if_due(self) -> None:
         """Prompt Glowmarkt to pull fresh DCC readings, at most every 2 hours.
@@ -388,6 +414,10 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
 
         imported = 0
         while cursor < current_hour:
+            if self.hass.is_stopping:
+                _LOGGER.debug("Home Assistant is stopping, abandoning backfill")
+                return
+
             chunk_end = min(cursor + timedelta(days=HOURLY_CHUNK_DAYS), current_hour)
             readings = await self.client.async_get_readings(
                 resource.resource_id,
