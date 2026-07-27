@@ -98,20 +98,33 @@ class FakeGlowmarktClient:
         self,
         virtual_entities: list[dict] | None = None,
         resources: list[dict] | None = None,
+        zero_from: datetime | None = None,
     ) -> None:
-        """Set up the canned account shape."""
+        """Set up the canned account shape.
+
+        `zero_from` makes hourly readings at or after that moment come back as
+        0.0, which is how the real API behaves for hours it has not collected
+        from the DCC yet.
+        """
         self.virtual_entities = (
             virtual_entities if virtual_entities is not None else VIRTUAL_ENTITIES
         )
         self.resources = (
             resources if resources is not None else RESOURCES_DUAL_FUEL
         )
+        self.zero_from = zero_from
         self.readings_calls: list[tuple[str, str]] = []
+        self.catchup_calls: list[str] = []
         self.login_calls = 0
 
     async def async_login(self) -> None:
         """Pretend to authenticate."""
         self.login_calls += 1
+
+    async def async_catchup(self, resource_id: str) -> bool:
+        """Record that a DCC catchup was requested."""
+        self.catchup_calls.append(resource_id)
+        return True
 
     async def async_get_virtual_entities(self) -> list[dict]:
         """Return the canned virtual entities."""
@@ -144,6 +157,7 @@ class FakeGlowmarktClient:
         cursor = start.replace(tzinfo=timezone.utc, minute=0, second=0, microsecond=0)
         limit = end.replace(tzinfo=timezone.utc)
         while cursor <= limit:
-            readings.append((int(cursor.timestamp()), value))
+            uncollected = self.zero_from is not None and cursor >= self.zero_from
+            readings.append((int(cursor.timestamp()), 0.0 if uncollected else value))
             cursor += timedelta(hours=1)
         return readings

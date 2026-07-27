@@ -109,6 +109,11 @@ than silently doing nothing.
 
 - DCC data lags roughly 30 minutes. Polling is every 30 minutes; anything faster
   just burns API calls.
+- Glowmarkt only collects from the DCC when prompted, so the integration asks
+  for a catchup every two hours (the upstream rate limit). Hours it has not
+  collected yet are returned as `0` rather than as missing, so a trailing run
+  of zeroes is treated as "not in yet" and re-fetched later rather than
+  stored.
 - Auth tokens last 7 days and are renewed automatically. If your password
   changes, Home Assistant raises a reauth prompt.
 - Reactive-power classifiers are ignored — they only matter for large

@@ -27,6 +27,23 @@ UPDATE_INTERVAL: Final = timedelta(minutes=30)
 # an inclusive from/to range can never trip the limit.
 HOURLY_CHUNK_DAYS: Final = 30
 
+# Glowmarkt only pulls fresh readings from the DCC when something asks it to —
+# the Bright app does this whenever you open it. Without it the readings
+# endpoint keeps answering 0 for hours it has no data for. The catchup call is
+# rate limited to once every two hours, so stay just outside that.
+CATCHUP_INTERVAL: Final = timedelta(hours=2, minutes=5)
+
+# Readings arrive late and get revised, so re-import a trailing window on every
+# pass rather than only strictly-new hours. This is what repairs hours that were
+# previously stored as 0 because the data had not landed yet.
+REFRESH_WINDOW_HOURS: Final = 72
+
+# A run of zeroes at the end of a response nearly always means "not collected
+# yet" rather than "used nothing", so those hours are left for a later pass.
+# Past this age, believe them — otherwise a genuinely idle meter would park the
+# import cursor forever.
+ZERO_TAIL_GRACE_HOURS: Final = 48
+
 PERIOD_HOURLY: Final = "PT1H"
 PERIOD_DAILY: Final = "P1D"
 FUNCTION_SUM: Final = "sum"

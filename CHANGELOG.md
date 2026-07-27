@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.1.1 — 2026-07-27
+
+Fixes a stall where consumption would stop updating after roughly a day, while
+the Bright app carried on showing fresh data.
+
+### Request a DCC catchup
+
+Glowmarkt only pulls new readings from the DCC when something asks it to — the
+Bright app does this every time you open it. An API-only consumer that never
+asks gets nothing new, and the readings endpoint answers **0** for every hour it
+has no data for. That looks exactly like a house that stopped using
+electricity.
+
+The integration now calls the catchup endpoint for each resource, at most once
+every two hours to stay inside the upstream rate limit.
+
+### Never store an uncollected hour
+
+Those zeroes were previously imported as real readings and baked into the
+cumulative sum. Because the incremental pass only walks forward, the true
+figures would never have replaced them — the gap would have been permanent.
+
+Two changes prevent that:
+
+- A trailing run of zeroes is now left unimported, on the basis that it means
+  "not collected yet" rather than "used nothing". Zeroes older than 48 hours are
+  taken at face value, so a genuinely idle meter cannot stall the import.
+- A 72-hour trailing window is re-imported on every pass, with the running total
+  re-anchored to the statistic before it, so late and revised readings replace
+  what was stored. Existing zeroed hours repair themselves on the next pass.
+
 ## v0.1.0 — 2026-07-25
 
 First release.

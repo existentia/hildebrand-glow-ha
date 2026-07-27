@@ -165,6 +165,24 @@ class GlowmarktClient:
             )
         return result.get("resources") or []
 
+    async def async_catchup(self, resource_id: str) -> bool:
+        """Ask Glowmarkt to fetch this resource's latest readings from the DCC.
+
+        Without this the platform only refreshes when something else prompts it
+        — opening the Bright app, typically — and the readings endpoint keeps
+        returning 0 for hours it has no data for. Rate limited upstream to once
+        every two hours.
+
+        Returns True if the request was accepted. Never raises: a failed catchup
+        should degrade to stale data, not break the update.
+        """
+        try:
+            await self._async_get(f"/resource/{resource_id}/catchup")
+        except GlowmarktError as err:
+            _LOGGER.debug("Catchup for %s failed: %s", resource_id, err)
+            return False
+        return True
+
     async def async_get_readings(
         self,
         resource_id: str,

@@ -1,12 +1,16 @@
 {
   "domain": "glowmarkt",
   "name": "Glowmarkt (Bright)",
-  "codeowners": ["@existentia"],
+  "codeowners": [
+    "@existentia"
+  ],
   "config_flow": true,
-  "dependencies": ["recorder"],
+  "dependencies": [
+    "recorder"
+  ],
   "documentation": "https://github.com/existentia/hildebrand-glow-ha",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/existentia/hildebrand-glow-ha/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

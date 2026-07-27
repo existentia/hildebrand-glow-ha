@@ -17,6 +17,7 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
@@ -28,6 +29,7 @@ from homeassistant.util import dt as dt_util, slugify
 
 from .api import GlowmarktAuthError, GlowmarktClient, GlowmarktConnectionError
 from .const import (
+    CATCHUP_INTERVAL,
     CONF_BACKFILL_DAYS,
     CURRENCY_GBP,
     DEFAULT_BACKFILL_DAYS,
@@ -36,8 +38,10 @@ from .const import (
     PENCE_PER_POUND,
     PERIOD_DAILY,
     PERIOD_HOURLY,
+    REFRESH_WINDOW_HOURS,
     SUPPORTED_CLASSIFIERS,
     UPDATE_INTERVAL,
+    ZERO_TAIL_GRACE_HOURS,
     ClassifierInfo,
 )
 
@@ -90,6 +94,7 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.backfill"
         )
         self._depth_applied: dict[str, int] | None = None
+        self._last_catchup: datetime | None = None
 
     @property
     def _backfill_days(self) -> int:
@@ -182,6 +187,8 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
         utc_offset = now.utcoffset() or timedelta(0)
         offset_minutes = -int(utc_offset.total_seconds() // 60)
 
+        await self._async_catchup_if_due()
+
         values: dict[str, float | None] = {}
         try:
             for resource in self.resources:
@@ -209,6 +216,69 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
 
         return values
 
+    async def _async_catchup_if_due(self) -> None:
+        """Prompt Glowmarkt to pull fresh DCC readings, at most every 2 hours.
+
+        Nothing else triggers this for an API-only consumer. Skip it and the
+        platform simply stops collecting, and the readings endpoint answers 0
+        for every hour it has no data for — which looks exactly like a house
+        that has stopped using electricity.
+        """
+        now = dt_util.utcnow()
+        if (
+            self._last_catchup is not None
+            and now - self._last_catchup < CATCHUP_INTERVAL
+        ):
+            return
+
+        self._last_catchup = now
+        for resource in self.resources:
+            await self.client.async_catchup(resource.resource_id)
+
+    @staticmethod
+    def _trim_unreported_tail(
+        readings: list[tuple[int, float]], now: datetime
+    ) -> list[tuple[int, float]]:
+        """Drop a trailing run of zeroes that has not had time to arrive yet.
+
+        A zero at the end of the response nearly always means the reading has
+        not been collected, not that nothing was used. Importing it would bake
+        the zero into the cumulative sum, and since the incremental pass only
+        walks forward, the real figure would never replace it.
+
+        Zeroes older than the grace period are taken at face value, so a
+        genuinely idle meter cannot park the cursor indefinitely.
+        """
+        cutoff = now - timedelta(hours=ZERO_TAIL_GRACE_HOURS)
+        end = len(readings)
+        while end > 0:
+            timestamp, value = readings[end - 1]
+            if value != 0:
+                break
+            if dt_util.utc_from_timestamp(timestamp) < cutoff:
+                break
+            end -= 1
+        return readings[:end]
+
+    async def _async_sum_before(
+        self, statistic_id: str, moment: datetime
+    ) -> float | None:
+        """Return the cumulative sum immediately before `moment`, if known."""
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            moment - timedelta(days=7),
+            moment,
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        series = rows.get(statistic_id) or []
+        if not series:
+            return None
+        return float(series[-1].get("sum") or 0.0)
+
     async def _async_backfill_guarded(self) -> None:
         """Run the backfill, swallowing errors so the task never explodes."""
         try:
@@ -234,7 +304,12 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
     async def _async_backfill_resource(self, resource: GlowmarktResource) -> None:
         """Import any hourly statistics we do not already hold.
 
-        Normally this walks forward from the newest statistic already stored.
+        Rather than importing only strictly-new hours, this re-imports a
+        trailing window on every pass, because Glowmarkt readings arrive late
+        and get revised. Statistics are keyed by hour, so re-importing replaces
+        them in place; the running sum is re-anchored to the last statistic
+        before the window so the cumulative series stays consistent.
+
         If the configured history depth has been increased since the last run,
         the series is instead cleared and rebuilt from the deeper start — rows
         cannot simply be prepended, because `sum` is cumulative and every later
@@ -271,8 +346,25 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
             )
             if last_stats and last_stats.get(statistic_id):
                 row = last_stats[statistic_id][0]
-                running_sum = float(row.get("sum") or 0.0)
-                cursor = dt_util.utc_from_timestamp(row["start"]) + timedelta(hours=1)
+                next_new_hour = dt_util.utc_from_timestamp(row["start"]) + timedelta(
+                    hours=1
+                )
+                # Reach back over the recent window so revised readings — and
+                # hours previously stored as 0 because nothing had been
+                # collected yet — get replaced with the real figures.
+                cursor = min(
+                    next_new_hour,
+                    current_hour - timedelta(hours=REFRESH_WINDOW_HOURS),
+                )
+                anchor_sum = await self._async_sum_before(statistic_id, cursor)
+                if anchor_sum is None:
+                    # Nothing to anchor the running total against, so rewriting
+                    # the window would corrupt every later sum. Stay strictly
+                    # incremental instead.
+                    cursor = next_new_hour
+                    running_sum = float(row.get("sum") or 0.0)
+                else:
+                    running_sum = anchor_sum
             else:
                 running_sum = 0.0
                 cursor = current_hour - timedelta(days=requested_days)
@@ -304,6 +396,11 @@ class GlowmarktCoordinator(DataUpdateCoordinator[dict[str, float | None]]):
                 PERIOD_HOURLY,
                 offset_minutes=0,
             )
+
+            # Only the final chunk can have an unreported tail; trimming an
+            # intermediate chunk would leave a hole mid-series.
+            if chunk_end >= current_hour:
+                readings = self._trim_unreported_tail(readings, now)
 
             batch: list[StatisticData] = []
             for timestamp, value in readings:

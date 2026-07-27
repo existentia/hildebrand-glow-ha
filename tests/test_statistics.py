@@ -133,3 +133,102 @@ async def test_second_pass_does_not_duplicate(
     await async_wait_recording_done(hass)
 
     assert len(await _rows(hass)) == len(first)
+
+
+async def test_uncollected_zero_tail_is_not_imported(
+    glowmarkt_env, hass: HomeAssistant
+) -> None:
+    """Trailing zeroes mean "not collected yet", so they must not be stored.
+
+    Importing them bakes a zero into the cumulative sum, and because the
+    incremental pass only walks forward the real reading would never replace
+    it — the meter would appear to stop, permanently.
+    """
+    zero_from = dt_util.utcnow().replace(
+        minute=0, second=0, microsecond=0
+    ) - timedelta(hours=5)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="a@b.com",
+        data={"username": "a@b.com", "password": "pw"},
+        options={CONF_BACKFILL_DAYS: 2},
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.glowmarkt.GlowmarktClient",
+        return_value=FakeGlowmarktClient(zero_from=zero_from),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    rows = await _rows(hass)
+    assert rows
+
+    assert not any(row["state"] == 0 for row in rows), "stored an uncollected hour"
+    latest = dt_util.utc_from_timestamp(rows[-1]["start"])
+    assert latest < zero_from
+
+
+async def test_late_data_replaces_previously_zero_hours(
+    glowmarkt_env, hass: HomeAssistant
+) -> None:
+    """Readings that arrive late overwrite what was already stored.
+
+    The trailing window is re-imported on every pass precisely so a stalled
+    feed repairs itself once the data lands.
+    """
+    now_hour = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    zero_from = now_hour - timedelta(hours=5)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="a@b.com",
+        data={"username": "a@b.com", "password": "pw"},
+        options={CONF_BACKFILL_DAYS: 2},
+    )
+    entry.add_to_hass(hass)
+    stalled = FakeGlowmarktClient(zero_from=zero_from)
+    with patch("custom_components.glowmarkt.GlowmarktClient", return_value=stalled):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    before = await _rows(hass)
+    stalled_latest = dt_util.utc_from_timestamp(before[-1]["start"])
+
+    # The DCC catches up and the missing hours now return real values.
+    stalled.zero_from = None
+    await entry.runtime_data.async_backfill()
+    await async_wait_recording_done(hass)
+
+    after = await _rows(hass)
+    assert dt_util.utc_from_timestamp(after[-1]["start"]) > stalled_latest
+    assert all(row["state"] == HOURLY_ENERGY for row in after)
+    # Sums stay monotonic across the repaired window.
+    sums = [row["sum"] for row in after]
+    assert sums == sorted(sums)
+
+
+async def test_catchup_is_requested_and_rate_limited(
+    glowmarkt_env, hass: HomeAssistant
+) -> None:
+    """Each resource gets a DCC catchup, but not on every single poll."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="a@b.com",
+        data={"username": "a@b.com", "password": "pw"},
+        options={CONF_BACKFILL_DAYS: 1},
+    )
+    client = await _setup(hass, entry)
+
+    resource_count = len(entry.runtime_data.resources)
+    assert sorted(client.catchup_calls) == sorted(
+        r.resource_id for r in entry.runtime_data.resources
+    )
+
+    # A refresh straight afterwards is inside the two-hour limit.
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert len(client.catchup_calls) == resource_count
